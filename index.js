@@ -1,9 +1,55 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const qrcode = require('qrcode');
 const axios = require('axios');
+const http = require('http');
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const PORT = process.env.PORT || 3000;
 const sessions = {};
+
+let currentQR = null;
+let isReady = false;
+
+// Web server — QR kodu göster
+const server = http.createServer(async (req, res) => {
+  if (req.url === '/') {
+    if (isReady) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:50px">
+        <h2>✅ WhatsApp Bağlı!</h2>
+        <p>Element WhatsApp Bot aktif ve çalışıyor.</p>
+      </body></html>`);
+    } else if (currentQR) {
+      try {
+        const qrImage = await qrcode.toDataURL(currentQR);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f0f0">
+          <h2>📱 WhatsApp QR Kod</h2>
+          <p>WhatsApp → Bağlı Cihazlar → Cihaz Ekle → QR'ı tara</p>
+          <img src="${qrImage}" style="width:300px;height:300px;border:10px solid white;border-radius:10px"/>
+          <p style="color:gray;font-size:12px">QR kod 60 saniyede yenilenir. Sayfayı yenile.</p>
+        </body></html>`);
+      } catch (e) {
+        res.writeHead(500);
+        res.end('QR oluşturulamadı');
+      }
+    } else {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:50px">
+        <h2>⏳ Başlatılıyor...</h2>
+        <p>Lütfen bekleyin, QR kod hazırlanıyor.</p>
+        <script>setTimeout(()=>location.reload(), 3000)</script>
+      </body></html>`);
+    }
+  } else {
+    res.writeHead(404);
+    res.end('Not found');
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`🌐 Web sunucu başlatıldı: http://localhost:${PORT}`);
+});
 
 const client = new Client({
   authStrategy: new LocalAuth(),
@@ -23,11 +69,13 @@ const client = new Client({
 });
 
 client.on('qr', (qr) => {
-  console.log('QR KOD OLUŞTU — WhatsApp ile tara:');
-  qrcode.generate(qr, { small: true });
+  currentQR = qr;
+  console.log('✅ QR KOD HAZIR — Tarayıcıdan aç ve tara!');
 });
 
 client.on('ready', () => {
+  isReady = true;
+  currentQR = null;
   console.log('✅ WhatsApp bağlantısı kuruldu!');
 });
 
@@ -40,29 +88,19 @@ client.on('auth_failure', (msg) => {
 });
 
 client.on('message', async (message) => {
-  // Grup mesajlarını yoksay
   if (message.from.endsWith('@g.us')) return;
-  // Durum mesajlarını yoksay
   if (message.from === 'status@broadcast') return;
 
   const from = message.from;
   const text = message.body;
 
-  console.log(`📩 Mesaj geldi [${from}]: ${text}`);
+  console.log(`📩 Mesaj [${from}]: ${text}`);
 
-  // Konuşma geçmişi
   if (!sessions[from]) sessions[from] = [];
   sessions[from].push({ role: 'user', content: text });
-
-  // Son 16 mesajı tut
-  if (sessions[from].length > 16) {
-    sessions[from] = sessions[from].slice(-16);
-  }
+  if (sessions[from].length > 16) sessions[from] = sessions[from].slice(-16);
 
   try {
-    // "Yazıyor..." göster
-    await client.sendPresenceAvailable();
-
     const systemPrompt = `Sen Element Toz Boya şirketinin 7/24 AI satış asistanısın. Adın "Element Asistan".
 
 ŞİRKET:
@@ -126,13 +164,9 @@ GENEL KURALLAR:
     );
 
     const aiReply = response.data.choices[0].message.content;
-
-    // Session'a ekle
     sessions[from].push({ role: 'assistant', content: aiReply });
-
-    // Cevap gönder
     await message.reply(aiReply);
-    console.log(`📤 Cevap gönderildi [${from}]: ${aiReply.substring(0, 80)}...`);
+    console.log(`📤 Cevap gönderildi`);
 
   } catch (error) {
     console.error('❌ Hata:', error.message);
